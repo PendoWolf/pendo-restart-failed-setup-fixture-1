@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,17 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  const { user: actor, account } = res.locals as AuthLocals;
+  // A seat added to the account. Never the new user's email, name or password.
+  trackEvent("user_created", actor, account, {
+    createdUserId: user.id,
+    role: user.role,
+    targetAccountId: user.accountId,
+    accountPlan: accountStore.get(user.accountId)?.plan,
+    accountUserCount: userStore.list(user.accountId).length,
+    actorRole: actor.role,
+    sameAccount: user.accountId === account.id,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +86,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -82,13 +96,36 @@ usersRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Only a real permissions change: not a name or email edit, or saving the same role again.
+  if (previous && body!.role !== undefined && body!.role !== previous.role) {
+    const { user: actor, account } = res.locals as AuthLocals;
+    trackEvent("user_role_changed", actor, account, {
+      targetUserId: updated.id,
+      previousRole: previous.role,
+      newRole: updated.role,
+      targetAccountId: updated.accountId,
+      actorRole: actor.role,
+      isSelfChange: req.params.id === actor.id,
+    });
+  }
   res.json(updated);
 });
 
 usersRouter.delete("/:id", (req, res) => {
-  if (!userStore.remove(req.params.id)) {
+  const user = userStore.get(req.params.id);
+  if (!user || !userStore.remove(req.params.id)) {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  const { user: actor, account } = res.locals as AuthLocals;
+  // A seat lost from the account. Never the removed user's email or name.
+  trackEvent("user_removed", actor, account, {
+    removedUserId: user.id,
+    removedUserRole: user.role,
+    targetAccountId: user.accountId,
+    remainingAccountUserCount: userStore.list(user.accountId).length,
+    actorRole: actor.role,
+    isSelfRemoval: req.params.id === actor.id,
+  });
   res.status(204).end();
 });

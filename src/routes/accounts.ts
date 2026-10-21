@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,14 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent("account_created", user, account, {
+    createdAccountId: created.id,
+    plan: created.plan,
+    actorRole: user.role,
+  });
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +67,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +75,20 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Only a real upgrade or downgrade: not a rename, or saving the same plan again.
+  if (previous && body!.plan !== undefined && body!.plan !== previous.plan) {
+    const { user, account } = res.locals as AuthLocals;
+    trackEvent("account_plan_changed", user, account, {
+      targetAccountId: updated.id,
+      previousPlan: previous.plan,
+      newPlan: updated.plan,
+      // PLANS runs from the cheapest plan to the dearest.
+      changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+      accountUserCount: userStore.list(updated.id).length,
+      actorRole: user.role,
+      isOwnAccount: req.params.id === account.id,
+    });
   }
   res.json(updated);
 });
@@ -74,9 +98,16 @@ accountsRouter.delete("/:id", (req, res) => {
     res.status(409).json({ error: "the account still has users" });
     return;
   }
-  if (!accountStore.remove(req.params.id)) {
+  const target = accountStore.get(req.params.id);
+  if (!target || !accountStore.remove(req.params.id)) {
     res.status(404).json({ error: "account not found" });
     return;
   }
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent("account_deleted", user, account, {
+    deletedAccountId: target.id,
+    plan: target.plan,
+    actorRole: user.role,
+  });
   res.status(204).end();
 });

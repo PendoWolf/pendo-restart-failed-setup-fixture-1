@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, replyErrorDetails, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,45 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  // What Pendo hears about the conversation, whether the reply works out or not. Never the messages' text: it's
+  // free text that may hold personal details.
+  const conversation = {
+    conversationId: body.conversationId,
+    messageCount: messages.length,
+    isNewConversation: messages.length === 1,
+    model: ASSISTANT_MODEL,
+  };
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason, refused, inputTokens, outputTokens } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    trackEvent("assistant_reply_generated", user, account, {
+      ...conversation,
+      messageId: reply.message.id,
+      userMessageCount: messages.filter((message) => message.role === "user").length,
+      upcomingTripsCount: upcomingTrips.length,
+      stopReason,
+      refused,
+      replyLength: content.length,
+      inputTokens,
+      outputTokens,
+      latencyMs: Date.now() - startedAt,
+    });
     res.json(reply);
   } catch (error) {
+    trackEvent("assistant_reply_failed", user, account, {
+      ...conversation,
+      ...replyErrorDetails(error),
+      latencyMs: Date.now() - startedAt,
+    });
     next(error);
   }
 });
