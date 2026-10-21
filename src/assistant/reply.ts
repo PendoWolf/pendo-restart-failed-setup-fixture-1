@@ -23,14 +23,21 @@ function systemPrompt(user: User, account: Account, upcomingTrips: Trip[]): stri
   ].join("\n");
 }
 
+/** The Tripwise Assistant's reply, and why the model stopped writing it. */
+export interface AssistantReply {
+  content: string;
+  /** Such as "end_turn", "max_tokens" when the reply was cut off, or "refusal" when the model declined. */
+  stopReason: Anthropic.StopReason | null;
+}
+
 /**
  * Writes the Tripwise Assistant's reply to the conversation by sending it to a Claude model through the
- * Anthropic SDK, and returns the reply's text.
+ * Anthropic SDK, and returns the reply's text with the model's stop reason.
  */
 export async function writeAssistantReply(
   messages: IncomingChatMessage[],
   context: { user: User; account: Account; upcomingTrips: Trip[] },
-): Promise<string> {
+): Promise<AssistantReply> {
   const response = await anthropic.messages.create({
     model: ASSISTANT_MODEL,
     max_tokens: 2000,
@@ -38,10 +45,14 @@ export async function writeAssistantReply(
     messages: messages.map(({ role, content }) => ({ role, content })),
   });
   if (response.stop_reason === "refusal") {
-    return "Sorry, I can't help with that one. Ask me about another part of your trip.";
+    return {
+      content: "Sorry, I can't help with that one. Ask me about another part of your trip.",
+      stopReason: response.stop_reason,
+    };
   }
-  return response.content
+  const content = response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n")
     .trim();
+  return { content, stopReason: response.stop_reason };
 }

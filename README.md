@@ -69,6 +69,29 @@ Claude model through the Anthropic SDK (`src/assistant/reply.ts`), which reads i
 `ANTHROPIC_API_KEY`. The model is told who the signed-in user is, their account, and their
 upcoming trips.
 
+## Pendo Track Events
+
+Some outcomes are only known here, such as whether a trip was saved or the assistant's model call
+failed, so the API sends them to Pendo itself, through Pendo's server-side Track Event API
+(`src/pendo/track.ts`):
+
+| Event | Sent when |
+| --- | --- |
+| `trip_created` | `POST /api/trips` saved a trip |
+| `trip_updated` | `PUT /api/trips/:id` changed a trip's details |
+| `assistant_reply_generated` | the assistant's reply came back from the model |
+| `assistant_reply_failed` | the model call failed, so the user got a `500` |
+| `team_member_added` | `POST /api/users` added a user |
+| `team_member_role_changed` | `PUT /api/users/:id` changed a user's role |
+| `account_created` | `POST /api/accounts` created an account |
+| `account_plan_changed` | `PUT /api/accounts/:id` changed an account's plan |
+
+Each event is for the signed-in user and their account, except that `account_plan_changed` is for
+the account whose plan changed. Events are sent in the background, so they never slow down or
+change a response. Their properties are ids, counts, dates, destinations, roles and plans: never
+chat text, emails, names or passwords. Pendo matches events by name, so renaming one starts a new
+event in Pendo. Nothing is sent until `PENDO_TRACK_EVENT_SECRET` is set.
+
 ## Structure
 
 - `src/index.ts` starts the server
@@ -77,6 +100,7 @@ upcoming trips.
 - `src/routes/` the auth, trips, users, accounts and assistant routes
 - `src/store/` in-memory stores for trips, users, accounts and sessions
 - `src/assistant/reply.ts` the assistant's replies, from the language model
+- `src/pendo/track.ts` the Pendo Track Events the API sends
 
 ## Run
 
@@ -93,3 +117,5 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_TRACK_EVENT_SECRET` | Pendo's Track Event shared secret; no Track Events are sent without it | none |
+| `PENDO_DATA_HOST` | Host of Pendo's data API, which the Track Events are sent to | `data.pendo-dev.pendo-dev.com` |

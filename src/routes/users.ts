@@ -1,4 +1,6 @@
 import { Router } from "express";
+import type { AuthLocals } from "../auth/require-auth.js";
+import { trackEvent } from "../pendo/track.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,22 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The new member's email, name and password never go to Pendo.
+  const { user: actingUser, account: actingAccount } = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_added",
+    visitorId: actingUser.id,
+    accountId: actingAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      accountId: user.accountId,
+      accountPlan: accountStore.get(user.accountId)?.plan,
+      accountUserCount: userStore.list(user.accountId).length,
+      addedByUserId: actingUser.id,
+      addedByRole: actingUser.role,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +91,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +100,23 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a role change counts: editing just the name or email leaves the role as it was.
+  if (previousRole && updated.role !== previousRole) {
+    const { user: actingUser, account: actingAccount } = res.locals as AuthLocals;
+    trackEvent({
+      event: "team_member_role_changed",
+      visitorId: actingUser.id,
+      accountId: actingAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        accountId: updated.accountId,
+        changedByUserId: actingUser.id,
+        isSelfChange: updated.id === actingUser.id,
+      },
+    });
   }
   res.json(updated);
 });
