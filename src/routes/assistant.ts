@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { pendoFor } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, PENDO_AGENT_ID, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,6 +25,19 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const pendo = pendoFor(user, account);
+  // The last message is the one the user just sent: the ones before it were tracked when they were sent. Messages
+  // are only ever text, so no file comes with it.
+  const latest = messages[messages.length - 1];
+  if (latest.role === "user") {
+    pendo.trackAgent("prompt", {
+      agentId: PENDO_AGENT_ID,
+      conversationId: body.conversationId,
+      messageId: randomUUID(),
+      content: latest.content,
+      fileUploaded: false,
+    });
+  }
   try {
     const content = await writeAssistantReply(messages, {
       user,
@@ -34,6 +48,15 @@ assistantRouter.post("/chat", async (req, res, next) => {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The reply's id is the one the web app gets, so a reaction to the reply can carry it. The model has no tools.
+    pendo.trackAgent("agent_response", {
+      agentId: PENDO_AGENT_ID,
+      conversationId: reply.conversationId,
+      messageId: reply.message.id,
+      content: reply.message.content,
+      modelUsed: ASSISTANT_MODEL,
+      toolsUsed: [],
+    });
     res.json(reply);
   } catch (error) {
     next(error);
