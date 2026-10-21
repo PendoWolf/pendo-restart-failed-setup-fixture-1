@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -21,6 +22,9 @@ authRouter.post("/login", (req, res) => {
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  // The credentials checked out. The Sign-in click also counts failed attempts, and the web app's landing page also
+  // loads when a saved session is restored, so only this marks a successful sign-in.
+  trackEvent("user_signed_in", user, account, { userRole: user.role, accountPlan: account.plan });
   res.json(session);
 });
 

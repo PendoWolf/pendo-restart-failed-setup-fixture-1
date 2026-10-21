@@ -23,25 +23,46 @@ function systemPrompt(user: User, account: Account, upcomingTrips: Trip[]): stri
   ].join("\n");
 }
 
+/** The Tripwise Assistant's reply, with why the model stopped and the tokens it used. */
+export interface AssistantReply {
+  content: string;
+  /** Such as "end_turn", "max_tokens" when the reply was cut off, or "refusal". */
+  stopReason: Anthropic.StopReason | null;
+  usage: Anthropic.Usage;
+}
+
 /**
  * Writes the Tripwise Assistant's reply to the conversation by sending it to a Claude model through the
- * Anthropic SDK, and returns the reply's text.
+ * Anthropic SDK, and returns the reply's text with why the model stopped and the tokens it used.
  */
 export async function writeAssistantReply(
   messages: IncomingChatMessage[],
   context: { user: User; account: Account; upcomingTrips: Trip[] },
-): Promise<string> {
+): Promise<AssistantReply> {
   const response = await anthropic.messages.create({
     model: ASSISTANT_MODEL,
     max_tokens: 2000,
     system: systemPrompt(context.user, context.account, context.upcomingTrips),
     messages: messages.map(({ role, content }) => ({ role, content })),
   });
-  if (response.stop_reason === "refusal") {
-    return "Sorry, I can't help with that one. Ask me about another part of your trip.";
+  const { stop_reason: stopReason, usage } = response;
+  if (stopReason === "refusal") {
+    return { content: "Sorry, I can't help with that one. Ask me about another part of your trip.", stopReason, usage };
   }
-  return response.content
+  const content = response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n")
     .trim();
+  return { content, stopReason, usage };
+}
+
+/** Why writing a reply failed: the Anthropic API's HTTP status, when it answered, and the kind of error. */
+export function describeReplyError(error: unknown): { status?: number; type: string } {
+  if (error instanceof Anthropic.APIError) {
+    // The API's error type, such as "rate_limit_error" or "overloaded_error", or else the SDK's error class, such
+    // as "APIConnectionError" when the API couldn't be reached.
+    return { status: error.status, type: error.type ?? error.constructor.name };
+  }
+  // Not from the API, such as the plain Error the SDK throws when it has no API key.
+  return { type: error instanceof Error ? error.constructor.name : "unknown" };
 }

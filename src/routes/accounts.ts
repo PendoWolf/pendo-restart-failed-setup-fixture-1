@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,11 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // A new company signed up, and the plan it started on: the Create click also fires on validation errors.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent("account_created", user, account, { newAccountId: created.id, plan: created.plan });
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +64,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +72,17 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // The account moved to another plan, an upgrade or a downgrade by the order of PLANS: a rename isn't tracked.
+  if (previous && updated.plan !== previous.plan) {
+    const { user, account } = res.locals as AuthLocals;
+    trackEvent("account_plan_changed", user, account, {
+      accountId: updated.id,
+      previousPlan: previous.plan,
+      newPlan: updated.plan,
+      changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+      accountUserCount: userStore.list(updated.id).length,
+    });
   }
   res.json(updated);
 });

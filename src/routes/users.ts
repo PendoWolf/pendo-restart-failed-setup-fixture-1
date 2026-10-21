@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,16 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Someone joined an account: the Add click also fires on 400s and 409s. Never their email, name or password.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent("user_created", actor, actorAccount, {
+    newUserId: user.id,
+    role: user.role,
+    // The account the new user joined, which may not be the signed-in user's own.
+    accountId: user.accountId,
+    accountUserCount: userStore.list(user.accountId).length,
+    actorRole: actor.role,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +85,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +94,17 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a role change (member <-> admin) is tracked: name and email edits are personal details.
+  if (previous && updated.role !== previous.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent("user_role_changed", actor, actorAccount, {
+      targetUserId: updated.id,
+      previousRole: previous.role,
+      newRole: updated.role,
+      accountId: updated.accountId,
+      actorRole: actor.role,
+    });
   }
   res.json(updated);
 });
