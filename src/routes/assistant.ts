@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, describeAssistantError, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,11 +25,28 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  // What the assistant's track events say about the chat. Never its messages: they may hold personal details.
+  const chat = { conversationId: body.conversationId, messageCount: messages.length, model: ASSISTANT_MODEL };
+  const startedAt = performance.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason, inputTokens, outputTokens } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
+    });
+    // A refusal still gets a canned reply, so only stopReason tells it apart from a real answer.
+    trackEvent("assistant_reply_generated", { user, account }, {
+      ...chat,
+      // The web app sends the whole conversation, so this is the turn number: 1 starts a new conversation.
+      userMessageCount: messages.filter((message) => message.role === "user").length,
+      stopReason: stopReason ?? undefined,
+      refused: stopReason === "refusal",
+      replyLength: content.length,
+      upcomingTripCount: upcomingTrips.length,
+      latencyMs: Math.round(performance.now() - startedAt),
+      inputTokens,
+      outputTokens,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
@@ -36,6 +54,12 @@ assistantRouter.post("/chat", async (req, res, next) => {
     };
     res.json(reply);
   } catch (error) {
+    // No answer came back: a missing or invalid API key, rate limiting, an overloaded model or a network failure.
+    trackEvent("assistant_reply_failed", { user, account }, {
+      ...chat,
+      ...describeAssistantError(error),
+      latencyMs: Math.round(performance.now() - startedAt),
+    });
     next(error);
   }
 });

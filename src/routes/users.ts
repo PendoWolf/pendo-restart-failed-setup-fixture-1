@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,16 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The signed-in user added someone to an account. Never send the new user's email, name or password.
+  const { user: actor, account } = res.locals as AuthLocals;
+  trackEvent("user_created", { user: actor, account }, {
+    newUserId: user.id,
+    role: user.role,
+    targetAccountId: user.accountId,
+    isOwnAccount: user.accountId === account.id,
+    accountUserCount: userStore.list(user.accountId).length,
+    actorRole: actor.role,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +85,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +94,18 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only a change of permissions counts: a name or email edit, or a role sent unchanged, leaves the role as it was.
+  if (previous && updated.role !== previous.role) {
+    const { user: actor, account } = res.locals as AuthLocals;
+    trackEvent("user_role_changed", { user: actor, account }, {
+      targetUserId: updated.id,
+      previousRole: previous.role,
+      newRole: updated.role,
+      targetAccountId: updated.accountId,
+      isSelfChange: req.params.id === actor.id,
+      actorRole: actor.role,
+    });
   }
   res.json(updated);
 });
