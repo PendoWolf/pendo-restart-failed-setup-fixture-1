@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,14 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const account = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  const auth = res.locals as AuthLocals;
+  trackEvent("account_created", {
+    visitorId: auth.user.id,
+    accountId: auth.account.id,
+    properties: { newAccountId: account.id, plan: account.plan },
+  });
+  res.status(201).json(account);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +67,8 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  // Read before the update, so a plan change can be told apart from a rename.
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +76,22 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  if (previous && body!.plan !== undefined && body!.plan !== previous.plan) {
+    const auth = res.locals as AuthLocals;
+    trackEvent("account_plan_changed", {
+      visitorId: auth.user.id,
+      // Attributed to the account whose plan changed, which may not be the signed-in user's own.
+      accountId: updated.id,
+      properties: {
+        targetAccountId: updated.id,
+        previousPlan: previous.plan,
+        newPlan: updated.plan,
+        // PLANS runs from the smallest plan to the biggest.
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+        isOwnAccount: updated.id === auth.account.id,
+      },
+    });
   }
   res.json(updated);
 });

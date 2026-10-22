@@ -77,6 +77,7 @@ upcoming trips.
 - `src/routes/` the auth, trips, users, accounts and assistant routes
 - `src/store/` in-memory stores for trips, users, accounts and sessions
 - `src/assistant/reply.ts` the assistant's replies, from the language model
+- `src/analytics/pendo.ts` sends Pendo Track Events for what the routes did, such as a trip created or a plan changed
 
 ## Run
 
@@ -93,3 +94,5 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_TRACK_EVENT_SECRET` | Pendo track event secret, sent with the API's Pendo Track Events; without it none are sent | none |
+| `PENDO_DATA_HOST` | Host of Pendo's data API, which the Track Events go to | `data.pendo-dev.pendo-dev.com` |
