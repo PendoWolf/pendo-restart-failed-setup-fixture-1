@@ -77,6 +77,7 @@ upcoming trips.
 - `src/routes/` the auth, trips, users, accounts and assistant routes
 - `src/store/` in-memory stores for trips, users, accounts and sessions
 - `src/assistant/reply.ts` the assistant's replies, from the language model
+- `src/analytics/pendo.ts` reports the assistant's prompts and replies with `pendo.trackAgent()`
 
 ## Run
 

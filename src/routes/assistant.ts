@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackAgent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_AGENT_ID, ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -23,6 +24,18 @@ assistantRouter.post("/chat", async (req, res, next) => {
     res.status(400).json({ error: "the conversation must start with a user message" });
     return;
   }
+  // The web app sends the user's new prompt as the conversation's last message. The chat takes text only, so no
+  // file comes with it.
+  const prompt = messages[messages.length - 1];
+  if (prompt.role === "user") {
+    trackAgent("prompt", {
+      agentId: ASSISTANT_AGENT_ID,
+      conversationId: body.conversationId,
+      messageId: randomUUID(),
+      content: prompt.content,
+      fileUploaded: false,
+    });
+  }
   const { user, account } = res.locals as AuthLocals;
   try {
     const content = await writeAssistantReply(messages, {
@@ -34,6 +47,14 @@ assistantRouter.post("/chat", async (req, res, next) => {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Tracked with the id the web app gets back as message.id, so a reaction to the reply can refer to it.
+    trackAgent("agent_response", {
+      agentId: ASSISTANT_AGENT_ID,
+      conversationId: reply.conversationId,
+      messageId: reply.message.id,
+      content: reply.message.content,
+      modelUsed: ASSISTANT_MODEL,
+    });
     res.json(reply);
   } catch (error) {
     next(error);
