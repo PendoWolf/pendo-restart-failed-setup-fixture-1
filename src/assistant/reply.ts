@@ -23,25 +23,47 @@ function systemPrompt(user: User, account: Account, upcomingTrips: Trip[]): stri
   ].join("\n");
 }
 
+/** The assistant's reply, with why the model stopped and the tokens it used. */
+export interface AssistantReply {
+  content: string;
+  /** "refusal" when the model declined (content is then a canned apology), "max_tokens" when the reply was cut off. */
+  stopReason: Anthropic.StopReason | null;
+  usage: Anthropic.Usage;
+}
+
 /**
  * Writes the Tripwise Assistant's reply to the conversation by sending it to a Claude model through the
- * Anthropic SDK, and returns the reply's text.
+ * Anthropic SDK, and returns the reply's text with why the model stopped and the tokens it used.
  */
 export async function writeAssistantReply(
   messages: IncomingChatMessage[],
   context: { user: User; account: Account; upcomingTrips: Trip[] },
-): Promise<string> {
+): Promise<AssistantReply> {
   const response = await anthropic.messages.create({
     model: ASSISTANT_MODEL,
     max_tokens: 2000,
     system: systemPrompt(context.user, context.account, context.upcomingTrips),
     messages: messages.map(({ role, content }) => ({ role, content })),
   });
-  if (response.stop_reason === "refusal") {
-    return "Sorry, I can't help with that one. Ask me about another part of your trip.";
+  const { stop_reason: stopReason, usage } = response;
+  if (stopReason === "refusal") {
+    return { content: "Sorry, I can't help with that one. Ask me about another part of your trip.", stopReason, usage };
   }
-  return response.content
+  const content = response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n")
     .trim();
+  return { content, stopReason, usage };
+}
+
+/**
+ * Says what kind of error writeAssistantReply threw, without its message: the Anthropic API's error type and HTTP
+ * status when the API answered (such as "overloaded_error" and 529), otherwise the error's class (such as
+ * "APIConnectionTimeoutError", or "Error" when no API key is set).
+ */
+export function describeReplyError(error: unknown): { errorType: string; errorStatus: number | undefined } {
+  if (error instanceof Anthropic.APIError) {
+    return { errorType: error.type ?? error.constructor.name, errorStatus: error.status };
+  }
+  return { errorType: error instanceof Error ? error.constructor.name : typeof error, errorStatus: undefined };
 }

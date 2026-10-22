@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { signedInVisitor, trackPendoEvent } from "../analytics/pendo.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +64,14 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Never the new user's email, name or password.
+  trackPendoEvent("user_added", signedInVisitor(res), {
+    newUserId: user.id,
+    role: user.role,
+    targetAccountId: user.accountId,
+    accountPlan: accountStore.get(user.accountId)?.plan,
+    accountUserCount: userStore.list(user.accountId).length,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +82,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +91,14 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  if (body!.role !== undefined && body!.role !== previousRole) {
+    trackPendoEvent("user_role_changed", signedInVisitor(res), {
+      targetUserId: updated.id,
+      previousRole,
+      newRole: updated.role,
+      targetAccountId: updated.accountId,
+    });
   }
   res.json(updated);
 });

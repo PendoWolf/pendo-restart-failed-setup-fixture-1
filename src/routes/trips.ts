@@ -1,8 +1,10 @@
 import { Router } from "express";
+import { signedInVisitor, trackPendoEvent } from "../analytics/pendo.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -24,6 +26,12 @@ function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
   return null;
 }
 
+/** Whole days from one ISO date to another (5 from "2026-11-03" to "2026-11-08"), or undefined for a non-date. */
+function daysBetween(from: string, to: string): number | undefined {
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+  return Number.isNaN(days) ? undefined : days;
+}
+
 export const tripsRouter = Router();
 
 tripsRouter.get("/", (_req, res) => {
@@ -42,6 +50,13 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  trackPendoEvent("trip_created", signedInVisitor(res), {
+    tripId: trip.id,
+    destination: trip.destination,
+    travelers: trip.travelers,
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate),
+    daysUntilStart: daysBetween(new Date().toISOString().slice(0, 10), trip.startDate),
   });
   res.status(201).json(trip);
 });

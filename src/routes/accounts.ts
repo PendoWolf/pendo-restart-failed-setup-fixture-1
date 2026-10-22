@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { signedInVisitor, trackPendoEvent } from "../analytics/pendo.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -15,6 +16,11 @@ function validateAccount(body: Partial<NewAccount> | undefined, partial: boolean
     return `plan must be one of ${PLANS.join(", ")}`;
   }
   return null;
+}
+
+/** "upgrade" when `to` comes after `from` in PLANS (Starter, then Business, then Enterprise), otherwise "downgrade". */
+function planChangeDirection(from: Account["plan"], to: Account["plan"]): "upgrade" | "downgrade" {
+  return PLANS.indexOf(to) > PLANS.indexOf(from) ? "upgrade" : "downgrade";
 }
 
 export const accountsRouter = Router();
@@ -48,7 +54,9 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const account = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  trackPendoEvent("account_created", signedInVisitor(res), { targetAccountId: account.id, plan: account.plan });
+  res.status(201).json(account);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +66,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousPlan = accountStore.get(req.params.id)?.plan;
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +74,15 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  if (previousPlan !== undefined && updated.plan !== previousPlan) {
+    trackPendoEvent("account_plan_changed", signedInVisitor(res), {
+      targetAccountId: updated.id,
+      previousPlan,
+      newPlan: updated.plan,
+      changeDirection: planChangeDirection(previousPlan, updated.plan),
+      accountUserCount: userStore.list(updated.id).length,
+    });
   }
   res.json(updated);
 });
@@ -74,9 +92,11 @@ accountsRouter.delete("/:id", (req, res) => {
     res.status(409).json({ error: "the account still has users" });
     return;
   }
+  const plan = accountStore.get(req.params.id)?.plan;
   if (!accountStore.remove(req.params.id)) {
     res.status(404).json({ error: "account not found" });
     return;
   }
+  trackPendoEvent("account_deleted", signedInVisitor(res), { targetAccountId: req.params.id, plan });
   res.status(204).end();
 });

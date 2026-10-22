@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { signedInVisitor, trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, describeReplyError, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,40 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason, usage } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Never the messages' or reply's text: it's free text that can hold personal details.
+    trackPendoEvent("assistant_reply_generated", signedInVisitor(res), {
+      conversationId: reply.conversationId,
+      messageId: reply.message.id,
+      model: ASSISTANT_MODEL,
+      stopReason: stopReason ?? "unknown",
+      messageCount: messages.length,
+      upcomingTripCount: upcomingTrips.length,
+      replyLength: content.length,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+      durationMs: Date.now() - startedAt,
+    });
     res.json(reply);
   } catch (error) {
+    trackPendoEvent("assistant_reply_failed", signedInVisitor(res), {
+      conversationId: body.conversationId,
+      messageCount: messages.length,
+      model: ASSISTANT_MODEL,
+      ...describeReplyError(error),
+      durationMs: Date.now() - startedAt,
+    });
     next(error);
   }
 });
