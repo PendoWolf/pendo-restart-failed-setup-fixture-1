@@ -1,8 +1,18 @@
 import { Router } from "express";
+import { signedInVisitor, trackPendoEvent } from "../analytics/pendo.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whole days from one ISO date to another, such as 5 from "2026-11-03" to "2026-11-08". NaN when either isn't a real
+ * date, such as "2026-13-01".
+ */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -42,6 +52,18 @@ tripsRouter.post("/", (req, res) => {
     startDate: body!.startDate!,
     endDate: body!.endDate!,
     travelers: body!.travelers!,
+  });
+  // The trip was saved: the core outcome of trip planning, with its length and how far ahead it was booked.
+  const today = new Date().toISOString().slice(0, 10);
+  trackPendoEvent("trip_created", signedInVisitor(res), {
+    tripId: trip.id,
+    destination: trip.destination,
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    travelers: trip.travelers,
+    // Counting both the first and the last day, so a same-day trip is 1 day long.
+    tripLengthDays: daysBetween(trip.startDate, trip.endDate) + 1,
+    daysUntilStart: daysBetween(today, trip.startDate),
   });
   res.status(201).json(trip);
 });

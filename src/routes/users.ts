@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { signedInVisitor, trackPendoEvent } from "../analytics/pendo.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +64,13 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // A user joined an account, with the role they were given. Never send their email, name or password.
+  trackPendoEvent("user_created", signedInVisitor(res), {
+    targetUserId: user.id,
+    role: user.role,
+    targetAccountId: user.accountId,
+    accountUserCount: userStore.list(user.accountId).length,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +81,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +90,16 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // The same request also edits names and emails, so only a role that actually changed counts: member to admin is a
+  // grant, admin to member a revoke.
+  if (previous && previous.role !== updated.role) {
+    trackPendoEvent("user_role_changed", signedInVisitor(res), {
+      targetUserId: updated.id,
+      previousRole: previous.role,
+      newRole: updated.role,
+      targetAccountId: updated.accountId,
+    });
   }
   res.json(updated);
 });

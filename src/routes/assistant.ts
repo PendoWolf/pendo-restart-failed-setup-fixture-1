@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import Anthropic from "@anthropic-ai/sdk";
 import { Router } from "express";
+import { signedInVisitor, trackPendoEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +26,43 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const visitor = signedInVisitor(res);
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason, inputTokens, outputTokens } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
     });
+    const latencyMs = Date.now() - startedAt;
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The assistant answered: how long it took, and whether the model finished, refused or was cut off at max_tokens.
+    trackPendoEvent("assistant_reply_generated", visitor, {
+      conversationId: body.conversationId,
+      messageCount: messages.length,
+      upcomingTripCount: upcomingTrips.length,
+      model: ASSISTANT_MODEL,
+      stopReason,
+      inputTokens,
+      outputTokens,
+      latencyMs,
+    });
     res.json(reply);
   } catch (error) {
+    // The model call threw (such as an authentication, rate-limit, overload or connection error), so the user gets a
+    // 500 instead of a reply.
+    trackPendoEvent("assistant_reply_failed", visitor, {
+      conversationId: body.conversationId,
+      messageCount: messages.length,
+      model: ASSISTANT_MODEL,
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+      errorStatus: error instanceof Anthropic.APIError ? error.status : undefined,
+      latencyMs: Date.now() - startedAt,
+    });
     next(error);
   }
 });

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -17,6 +18,13 @@ authRouter.post("/login", (req, res) => {
   const user = userStore.verifyPassword(body.email, body.password);
   const account = user ? accountStore.get(user.accountId) : undefined;
   if (!user || !account) {
+    // The attempt counts against the user the email belongs to, when there is one. Never send the email or password.
+    const knownUser = user ?? userStore.findByEmail(body.email);
+    const reason = user ? "account_missing" : knownUser ? "wrong_password" : "unknown_email";
+    const visitor = knownUser
+      ? { visitorId: knownUser.id, accountId: knownUser.accountId }
+      : { visitorId: "system", accountId: "system" };
+    trackPendoEvent("sign_in_failed", visitor, { reason });
     res.status(401).json({ error: "wrong email or password" });
     return;
   }
