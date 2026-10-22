@@ -1,4 +1,6 @@
 import { Router } from "express";
+import type { AuthLocals } from "../auth/require-auth.js";
+import { trackEvent } from "../pendo/track-event.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,14 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Tells Pendo someone was added to an account, as done by the signed-in user. Never with their email or name.
+  trackEvent("team_member_added", res.locals as AuthLocals, {
+    newUserId: user.id,
+    role: user.role,
+    roleDefaulted: body!.role === undefined,
+    accountId: user.accountId,
+    accountUserCount: userStore.list(user.accountId).length,
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +83,8 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  // Read before updating, so a role change can be told apart from an edit that keeps the role.
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +93,19 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Tells Pendo the user's role changed, only when it really did. accountAdminCount is 0 when the account was left
+  // without an admin.
+  if (previous && body!.role !== undefined && body!.role !== previous.role) {
+    const locals = res.locals as AuthLocals;
+    trackEvent("team_member_role_changed", locals, {
+      targetUserId: updated.id,
+      previousRole: previous.role,
+      newRole: updated.role,
+      accountId: updated.accountId,
+      selfChange: updated.id === locals.user.id,
+      accountAdminCount: userStore.list(updated.accountId).filter((member) => member.role === "admin").length,
+    });
   }
   res.json(updated);
 });

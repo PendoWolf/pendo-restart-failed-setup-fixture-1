@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, describeReplyError, writeAssistantReply } from "../assistant/reply.js";
+import { trackEvent } from "../pendo/track-event.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,46 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  // What the chat's Track Events say about the conversation: never its messages, only its id and length. The id comes
+  // from the web app, so a long one is cut short to stay within Pendo's size limit for properties.
+  const conversation = {
+    conversationId: body.conversationId.slice(0, 64),
+    messageCount: messages.length,
+    model: ASSISTANT_MODEL,
+  };
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason, usage } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
     });
+    const latencyMs = Date.now() - startedAt;
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Tells Pendo the model answered, and how: in full, cut off at max_tokens, or with a refusal.
+    trackEvent("assistant_reply_generated", res.locals as AuthLocals, {
+      ...conversation,
+      userMessageCount: messages.filter((message) => message.role === "user").length,
+      upcomingTripCount: upcomingTrips.length,
+      stopReason: stopReason ?? undefined,
+      refused: stopReason === "refusal",
+      replyLength: content.length,
+      latencyMs,
+      inputTokens: usage.input_tokens,
+      outputTokens: usage.output_tokens,
+    });
     res.json(reply);
   } catch (error) {
+    // Tells Pendo the assistant couldn't reply, before the error becomes a generic 500.
+    trackEvent("assistant_reply_failed", res.locals as AuthLocals, {
+      ...conversation,
+      ...describeReplyError(error),
+      latencyMs: Date.now() - startedAt,
+    });
     next(error);
   }
 });
