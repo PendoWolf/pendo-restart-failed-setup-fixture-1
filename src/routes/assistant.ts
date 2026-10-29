@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent, truncateProperty } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -25,17 +26,42 @@ assistantRouter.post("/chat", async (req, res, next) => {
   }
   const { user, account } = res.locals as AuthLocals;
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Pendo: the model returned a reply (or refused). Only known once the model call finishes.
+    trackPendoEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncateProperty(body.conversationId),
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        refused,
+        replyLength: content.length,
+        upcomingTripCount: upcomingTrips.length,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // Pendo: the assistant failed to answer, before the error reaches the 500 handler.
+    trackPendoEvent({
+      event: "assistant_reply_failed",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncateProperty(body.conversationId),
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+      },
+    });
     next(error);
   }
 });
