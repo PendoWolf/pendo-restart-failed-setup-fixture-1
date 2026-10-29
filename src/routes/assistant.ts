@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,11 +25,24 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    // The model answered (or refused): only the server knows the outcome and how much context it had.
+    trackEvent("assistant_reply_generated", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: body.conversationId,
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        refused,
+        replyLength: content.length,
+        model: ASSISTANT_MODEL,
+        upcomingTripsCount: upcomingTrips.length,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
@@ -36,6 +50,18 @@ assistantRouter.post("/chat", async (req, res, next) => {
     };
     res.json(reply);
   } catch (error) {
+    // The model call failed (for example an Anthropic API error); the request ends in the 500 handler.
+    trackEvent("assistant_reply_failed", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: body.conversationId,
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        errorType: error instanceof Error ? error.constructor.name : "unknown",
+        accountPlan: account.plan,
+      },
+    });
     next(error);
   }
 });

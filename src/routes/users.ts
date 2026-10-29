@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,16 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // A new member joined the account. Never send their email or name.
+  trackEvent("team_member_added", {
+    visitorId: (res.locals as AuthLocals).user.id,
+    accountId: user.accountId,
+    properties: {
+      newUserId: user.id,
+      assignedRole: user.role,
+      accountTeamSize: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +85,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +94,14 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only when the role actually changed, such as member to admin.
+  if (previousRole !== undefined && previousRole !== updated.role) {
+    trackEvent("team_member_role_changed", {
+      visitorId: (res.locals as AuthLocals).user.id,
+      accountId: updated.accountId,
+      properties: { targetUserId: updated.id, previousRole, newRole: updated.role },
+    });
   }
   res.json(updated);
 });
