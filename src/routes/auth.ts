@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -21,6 +22,13 @@ authRouter.post("/login", (req, res) => {
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  // The password checked out and a session started: a real sign-in, not a 401.
+  trackEvent({
+    event: "user_signed_in",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { role: user.role, accountPlan: account.plan },
+  });
   res.json(session);
 });
 

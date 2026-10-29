@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,37 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
-  try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
+  const upcomingTrips = tripStore.upcoming();
+  const conversationId = body.conversationId;
+  // Tracks how the model answered: a reply, a refusal or an error, with what the assistant knew.
+  const trackReply = (outcome: "success" | "refusal" | "error", replyLength: number) => {
+    trackEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: conversationId.slice(0, 100),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        upcomingTripsCount: upcomingTrips.length,
+        model: ASSISTANT_MODEL,
+        outcome,
+        replyLength,
+        userRole: user.role,
+        accountPlan: account.plan,
+      },
     });
+  };
+  try {
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    trackReply(refused ? "refusal" : "success", content.length);
     const reply: ChatReply = {
-      conversationId: body.conversationId,
+      conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
     res.json(reply);
   } catch (error) {
+    trackReply("error", 0);
     next(error);
   }
 });

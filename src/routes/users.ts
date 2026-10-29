@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,21 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The user was created (not a 400 or 409). No email or name: those are personal data.
+  const actor = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_added",
+    visitorId: actor.user.id,
+    accountId: actor.account.id,
+    properties: {
+      newUserId: user.id,
+      targetAccountId: user.accountId,
+      role: user.role,
+      roleDefaulted: body!.role === undefined,
+      accountPlan: accountStore.get(user.accountId)?.plan ?? "unknown",
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +90,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -82,13 +100,43 @@ usersRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Only a real permission change counts: the role differs from the one the user had before.
+  if (previous && previous.role !== updated.role) {
+    const actor = res.locals as AuthLocals;
+    trackEvent({
+      event: "user_role_changed",
+      visitorId: actor.user.id,
+      accountId: actor.account.id,
+      properties: {
+        targetUserId: updated.id,
+        targetAccountId: updated.accountId,
+        previousRole: previous.role,
+        newRole: updated.role,
+        changedFields: (["email", "name", "role"] as const).filter((field) => previous[field] !== updated[field]),
+      },
+    });
+  }
   res.json(updated);
 });
 
 usersRouter.delete("/:id", (req, res) => {
-  if (!userStore.remove(req.params.id)) {
+  // Read before removing, so the event knows the removed user's role and account.
+  const user = userStore.get(req.params.id);
+  if (!user || !userStore.remove(req.params.id)) {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  const actor = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_removed",
+    visitorId: actor.user.id,
+    accountId: actor.account.id,
+    properties: {
+      removedUserId: user.id,
+      targetAccountId: user.accountId,
+      role: user.role,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(204).end();
 });
