@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,49 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const replyProperties = {
+    conversation_id: body.conversationId.slice(0, 100),
+    message_count: messages.length,
+    user_message_count: messages.filter((message) => message.role === "user").length,
+    model: ASSISTANT_MODEL,
+    account_id: account.id,
+    account_plan: account.plan,
+  };
+  let upcomingTripCount = 0;
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    upcomingTripCount = upcomingTrips.length;
+    const { content, wasRefusal } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The language model's reply came back (or it refused) and the reply is ready to send.
+    trackEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      {
+        ...replyProperties,
+        upcoming_trip_count: upcomingTripCount,
+        was_refusal: wasRefusal,
+        reply_length: content.length,
+        outcome: "success",
+      },
+    );
     res.json(reply);
   } catch (error) {
+    // No reply could be generated, so failed replies can be measured too.
+    trackEvent(
+      "assistant_reply_generated",
+      { visitorId: user.id, accountId: account.id },
+      {
+        ...replyProperties,
+        upcoming_trip_count: upcomingTripCount,
+        was_refusal: false,
+        reply_length: 0,
+        outcome: "error",
+      },
+    );
     next(error);
   }
 });

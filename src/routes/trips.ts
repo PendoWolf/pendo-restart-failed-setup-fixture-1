@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { daysBetween, todayIsoDate, trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
 import type { NewTrip } from "../types.js";
 
@@ -43,6 +45,22 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was created.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent(
+    "trip_created",
+    { visitorId: user.id, accountId: account.id },
+    {
+      trip_id: trip.id,
+      destination: trip.destination.slice(0, 100),
+      travelers: trip.travelers,
+      trip_length_days: daysBetween(trip.startDate, trip.endDate),
+      days_until_start: daysBetween(todayIsoDate(), trip.startDate),
+      start_date: trip.startDate,
+      account_id: account.id,
+      account_plan: account.plan,
+    },
+  );
   res.status(201).json(trip);
 });
 
@@ -62,6 +80,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -72,6 +91,21 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "trip not found" });
     return;
   }
+  // The update passed validation and the trip was found.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent(
+    "trip_updated",
+    { visitorId: user.id, accountId: account.id },
+    {
+      trip_id: trip.id,
+      destination: trip.destination.slice(0, 100),
+      travelers: trip.travelers,
+      trip_length_days: daysBetween(trip.startDate, trip.endDate),
+      destination_changed: previous?.destination !== trip.destination,
+      dates_changed: previous?.startDate !== trip.startDate || previous?.endDate !== trip.endDate,
+      travelers_changed: previous?.travelers !== trip.travelers,
+    },
+  );
   res.json(trip);
 });
 
