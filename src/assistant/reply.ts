@@ -23,14 +23,20 @@ function systemPrompt(user: User, account: Account, upcomingTrips: Trip[]): stri
   ].join("\n");
 }
 
+/** The assistant's reply, and whether the model refused to answer. */
+export interface AssistantReply {
+  content: string;
+  refused: boolean;
+}
+
 /**
  * Writes the Tripwise Assistant's reply to the conversation by sending it to a Claude model through the
- * Anthropic SDK, and returns the reply's text.
+ * Anthropic SDK, and returns the reply's text and whether the model refused.
  */
 export async function writeAssistantReply(
   messages: IncomingChatMessage[],
   context: { user: User; account: Account; upcomingTrips: Trip[] },
-): Promise<string> {
+): Promise<AssistantReply> {
   const response = await anthropic.messages.create({
     model: ASSISTANT_MODEL,
     max_tokens: 2000,
@@ -38,10 +44,14 @@ export async function writeAssistantReply(
     messages: messages.map(({ role, content }) => ({ role, content })),
   });
   if (response.stop_reason === "refusal") {
-    return "Sorry, I can't help with that one. Ask me about another part of your trip.";
+    return {
+      content: "Sorry, I can't help with that one. Ask me about another part of your trip.",
+      refused: true,
+    };
   }
-  return response.content
+  const content = response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))
     .join("\n")
     .trim();
+  return { content, refused: false };
 }

@@ -1,8 +1,32 @@
 import { Router } from "express";
+import { trackPendoEvent, truncateForPendo } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TRIP_FIELDS = ["destination", "startDate", "endDate", "travelers"] as const;
+
+/** Whole days from the ISO date `from` to the ISO date `to` (negative when `to` is earlier). */
+function daysBetween(from: string, to: string): number {
+  return Math.round((Date.parse(to) - Date.parse(from)) / DAY_MS);
+}
+
+/** The Pendo Track Event properties that describe a trip. */
+function tripProperties(trip: Trip) {
+  const today = new Date().toISOString().slice(0, 10);
+  return {
+    tripId: trip.id,
+    destination: truncateForPendo(trip.destination),
+    startDate: trip.startDate,
+    endDate: trip.endDate,
+    // Counts both the first and the last day, so a same-day trip is 1 day.
+    tripDurationDays: daysBetween(trip.startDate, trip.endDate) + 1,
+    travelers: trip.travelers,
+    daysUntilDeparture: daysBetween(today, trip.startDate),
+  };
+}
 
 /** Returns why `body` isn't a valid trip, or null when it is. */
 function validateNewTrip(body: Partial<NewTrip> | undefined): string | null {
@@ -44,6 +68,9 @@ tripsRouter.post("/", (req, res) => {
     travelers: body!.travelers!,
   });
   res.status(201).json(trip);
+  // The trip passed validation and was saved.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent("trip_created", { visitorId: user.id, accountId: account.id }, tripProperties(trip));
 });
 
 tripsRouter.get("/:id", (req, res) => {
@@ -62,6 +89,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -73,6 +101,16 @@ tripsRouter.put("/:id", (req, res) => {
     return;
   }
   res.json(trip);
+  // The trip's new details were saved.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent(
+    "trip_updated",
+    { visitorId: user.id, accountId: account.id },
+    {
+      ...tripProperties(trip),
+      changedFields: TRIP_FIELDS.filter((field) => previous?.[field] !== trip[field]),
+    },
+  );
 });
 
 tripsRouter.delete("/:id", (req, res) => {

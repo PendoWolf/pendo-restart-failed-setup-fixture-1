@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -64,6 +66,18 @@ usersRouter.post("/", (req, res) => {
     password: body!.password!,
   });
   res.status(201).json(user);
+  // A new user was created in the account: the team grew.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackPendoEvent(
+    "team_member_added",
+    { visitorId: actor.id, accountId: actorAccount.id },
+    {
+      userId: user.id,
+      role: user.role,
+      accountId: user.accountId,
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  );
 });
 
 usersRouter.put("/:id", (req, res) => {
@@ -73,6 +87,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -83,6 +98,15 @@ usersRouter.put("/:id", (req, res) => {
     return;
   }
   res.json(updated);
+  // Only when the update actually changed the user's role (a permission change).
+  if (previousRole !== undefined && previousRole !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackPendoEvent(
+      "user_role_changed",
+      { visitorId: actor.id, accountId: actorAccount.id },
+      { userId: updated.id, accountId: updated.accountId, previousRole, newRole: updated.role },
+    );
+  }
 });
 
 usersRouter.delete("/:id", (req, res) => {

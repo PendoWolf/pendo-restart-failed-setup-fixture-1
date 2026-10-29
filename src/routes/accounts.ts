@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,15 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  res.status(201).json(created);
+  // A new company account was created, with its starting plan.
+  const { user, account } = res.locals as AuthLocals;
+  trackPendoEvent(
+    "account_created",
+    { visitorId: user.id, accountId: account.id },
+    { accountId: created.id, plan: created.plan },
+  );
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +68,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousPlan = accountStore.get(req.params.id)?.plan;
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -67,6 +78,20 @@ accountsRouter.put("/:id", (req, res) => {
     return;
   }
   res.json(updated);
+  // Only when the update actually changed the plan (an upgrade or a downgrade).
+  if (previousPlan !== undefined && previousPlan !== updated.plan) {
+    const { user, account } = res.locals as AuthLocals;
+    trackPendoEvent(
+      "account_plan_changed",
+      { visitorId: user.id, accountId: account.id },
+      {
+        accountId: updated.id,
+        previousPlan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previousPlan) ? "upgrade" : "downgrade",
+      },
+    );
+  }
 });
 
 accountsRouter.delete("/:id", (req, res) => {
