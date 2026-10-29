@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackAgent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, ASSISTANT_PENDO_AGENT_ID, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,6 +25,21 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const identity = { visitorId: user.id, accountId: account.id };
+  // The last message is the one the user just sent.
+  const prompt = messages[messages.length - 1];
+  if (prompt.role === "user") {
+    trackAgent(
+      "prompt",
+      {
+        agentId: ASSISTANT_PENDO_AGENT_ID,
+        conversationId: body.conversationId,
+        messageId: randomUUID(),
+        content: prompt.content,
+      },
+      identity,
+    );
+  }
   try {
     const content = await writeAssistantReply(messages, {
       user,
@@ -34,6 +50,18 @@ assistantRouter.post("/chat", async (req, res, next) => {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    trackAgent(
+      "agent_response",
+      {
+        agentId: ASSISTANT_PENDO_AGENT_ID,
+        conversationId: reply.conversationId,
+        messageId: reply.message.id,
+        content: reply.message.content,
+        modelUsed: ASSISTANT_MODEL,
+        toolsUsed: [],
+      },
+      identity,
+    );
     res.json(reply);
   } catch (error) {
     next(error);
