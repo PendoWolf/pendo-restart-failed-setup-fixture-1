@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,15 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // The new company account was saved, with the plan that was picked for it.
+  const actor = res.locals as AuthLocals;
+  trackPendoEvent(
+    "company_account_created",
+    { visitorId: actor.user.id, accountId: actor.account.id },
+    { accountId: created.id, plan: created.plan },
+  );
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +68,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousPlan = accountStore.get(req.params.id)?.plan;
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +76,20 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Only when the save actually moved the account to a different plan.
+  if (previousPlan !== undefined && updated.plan !== previousPlan) {
+    const actor = res.locals as AuthLocals;
+    trackPendoEvent(
+      "account_plan_changed",
+      { visitorId: actor.user.id, accountId: actor.account.id },
+      {
+        accountId: updated.id,
+        previousPlan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previousPlan) ? "upgrade" : "downgrade",
+      },
+    );
   }
   res.json(updated);
 });

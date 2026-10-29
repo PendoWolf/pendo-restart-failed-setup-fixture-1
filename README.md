@@ -93,3 +93,12 @@ npm run build && npm start
 | `PORT` | Port the API listens on | `3001` |
 | `CORS_ORIGIN` | Origin of the Tripwise web app | `http://localhost:5173` |
 | `ANTHROPIC_API_KEY` | Key for the Anthropic API, used by the assistant | none |
+| `PENDO_DATA_HOST` | Pendo data host that receives the API's track events | `data.pendo-dev.pendo-dev.com` |
+| `PENDO_TRACK_EVENT_SECRET` | Pendo track event key; track events aren't sent while it's unset | none |
+
+## Pendo track events
+
+`src/analytics/pendo.ts` sends server-side Pendo track events for outcomes only the API knows about:
+`user_signed_in`, `trip_created`, `trip_updated`, `assistant_reply_completed`, `team_member_added`,
+`user_role_changed`, `company_account_created` and `account_plan_changed`. Each is sent as the signed-in user
+and their account, in the background, so a failed event never affects the response.
