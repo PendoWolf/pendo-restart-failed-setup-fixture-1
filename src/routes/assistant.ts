@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { TRIPWISE_ASSISTANT_AGENT_ID, trackAgent } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,6 +25,18 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  // The newest message is the prompt the user just sent; the ones before it were tracked on earlier requests.
+  const prompt = messages[messages.length - 1];
+  if (prompt.role === "user") {
+    trackAgent("prompt", {
+      agentId: TRIPWISE_ASSISTANT_AGENT_ID,
+      conversationId: body.conversationId,
+      messageId: randomUUID(),
+      content: prompt.content,
+      // The chat only takes text, so a message never has a file attached.
+      fileUploaded: false,
+    });
+  }
   try {
     const content = await writeAssistantReply(messages, {
       user,
@@ -34,6 +47,14 @@ assistantRouter.post("/chat", async (req, res, next) => {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    trackAgent("agent_response", {
+      agentId: TRIPWISE_ASSISTANT_AGENT_ID,
+      conversationId: reply.conversationId,
+      messageId: reply.message.id,
+      content: reply.message.content,
+      modelUsed: ASSISTANT_MODEL,
+      toolsUsed: [],
+    });
     res.json(reply);
   } catch (error) {
     next(error);
