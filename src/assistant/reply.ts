@@ -4,6 +4,9 @@ import type { Account, IncomingChatMessage, Trip, User } from "../types.js";
 /** The model the Tripwise Assistant answers with. */
 export const ASSISTANT_MODEL = "claude-opus-5-5";
 
+/** What the assistant says when the model refuses to answer. */
+export const REFUSAL_REPLY = "Sorry, I can't help with that one. Ask me about another part of your trip.";
+
 // The SDK reads the key from the ANTHROPIC_API_KEY environment variable.
 const anthropic = new Anthropic();
 
@@ -38,7 +41,7 @@ export async function writeAssistantReply(
     messages: messages.map(({ role, content }) => ({ role, content })),
   });
   if (response.stop_reason === "refusal") {
-    return "Sorry, I can't help with that one. Ask me about another part of your trip.";
+    return REFUSAL_REPLY;
   }
   return response.content
     .flatMap((block) => (block.type === "text" ? [block.text] : []))

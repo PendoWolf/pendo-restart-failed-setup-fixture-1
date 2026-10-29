@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackServerEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,15 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // A new company account exists, on the plan it was created with.
+  const { user, account } = res.locals as AuthLocals;
+  trackServerEvent("account_created", {
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { accountId: created.id, plan: created.plan },
+  });
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +68,8 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  // Read before the update, to know which plan the account had.
+  const previousPlan = accountStore.get(req.params.id)?.plan;
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +77,20 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Only a real plan change counts, not a name-only edit or saving the same plan again.
+  if (previousPlan !== undefined && previousPlan !== updated.plan) {
+    const { user, account } = res.locals as AuthLocals;
+    trackServerEvent("account_plan_changed", {
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        accountId: updated.id,
+        previousPlan,
+        newPlan: updated.plan,
+        changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previousPlan) ? "upgrade" : "downgrade",
+      },
+    });
   }
   res.json(updated);
 });
