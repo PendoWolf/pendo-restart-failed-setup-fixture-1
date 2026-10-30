@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { APIError } from "@anthropic-ai/sdk";
 import { Router } from "express";
+import { trackEvent, truncate } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -25,17 +27,45 @@ assistantRouter.post("/chat", async (req, res, next) => {
   }
   const { user, account } = res.locals as AuthLocals;
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const upcomingTrips = tripStore.upcoming();
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The assistant generated a reply (or the model refused), right before it goes back to the web app.
+    trackEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncate(body.conversationId),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        replyLength: content.length,
+        refused,
+        model: ASSISTANT_MODEL,
+        upcomingTripCount: upcomingTrips.length,
+        accountPlan: account.plan,
+        userRole: user.role,
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // Writing the reply failed (such as an Anthropic API error), so the user gets a 500 instead of a reply.
+    trackEvent({
+      event: "assistant_reply_failed",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncate(body.conversationId),
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        ...(error instanceof APIError && typeof error.status === "number" && { errorStatus: error.status }),
+        accountPlan: account.plan,
+      },
+    });
     next(error);
   }
 });
