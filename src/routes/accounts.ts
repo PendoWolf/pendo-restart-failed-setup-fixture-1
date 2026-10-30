@@ -1,4 +1,6 @@
 import { Router } from "express";
+import type { AuthLocals } from "../auth/require-auth.js";
+import { identityOf, trackEvent } from "../pendo/track.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,14 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const account = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // Pendo Track Event: a new customer account was saved, with its starting plan. The event is attributed to the
+  // signed-in user and their own account; the new account's id is a property.
+  trackEvent("account_created", identityOf(res.locals as AuthLocals), {
+    newAccountId: account.id,
+    plan: account.plan,
+  });
+  res.status(201).json(account);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,6 +67,7 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousPlan = accountStore.get(req.params.id)?.plan;
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
@@ -65,6 +75,16 @@ accountsRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Pendo Track Event: only when the plan actually changed (an upgrade or downgrade), not on a rename or a
+  // request that resends the same plan.
+  if (previousPlan !== undefined && updated.plan !== previousPlan) {
+    trackEvent("account_plan_changed", identityOf(res.locals as AuthLocals), {
+      targetAccountId: updated.id,
+      previousPlan,
+      newPlan: updated.plan,
+      changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previousPlan) ? "upgrade" : "downgrade",
+    });
   }
   res.json(updated);
 });

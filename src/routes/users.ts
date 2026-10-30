@@ -1,4 +1,6 @@
 import { Router } from "express";
+import type { AuthLocals } from "../auth/require-auth.js";
+import { identityOf, trackEvent } from "../pendo/track.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -62,6 +64,14 @@ usersRouter.post("/", (req, res) => {
     role: body!.role ?? "member",
     accountId: body!.accountId!,
     password: body!.password!,
+  });
+  // Pendo Track Event: the new user passed validation and the duplicate-email check and was saved. Never send
+  // their email, name or password.
+  trackEvent("team_member_added", identityOf(res.locals as AuthLocals), {
+    newUserId: user.id,
+    role: user.role,
+    targetAccountId: user.accountId,
+    accountUserCount: userStore.list(user.accountId).length,
   });
   res.status(201).json(user);
 });

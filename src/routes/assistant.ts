@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
+import { clip, identityOf, trackEvent } from "../pendo/track.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,38 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
+  // Pendo Track Event properties shared by the success, refusal and failure variants of assistant_reply_generated.
+  const conversationProperties = {
+    conversationId: clip(body.conversationId),
+    messageCount: messages.length,
+    userTurnCount: messages.filter((message) => message.role === "user").length,
+    model: ASSISTANT_MODEL,
+    upcomingTripCount: upcomingTrips.length,
+    accountPlan: account.plan,
+  };
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Pendo Track Event: the model answered (or refused), which a click on the chat send button can't tell apart.
+    trackEvent("assistant_reply_generated", identityOf({ user, account }), {
+      ...conversationProperties,
+      replyLength: content.length,
+      refused,
+      outcome: refused ? "refused" : "success",
+    });
     res.json(reply);
   } catch (error) {
+    // Pendo Track Event, failure variant: the model call (or building the reply) threw.
+    trackEvent("assistant_reply_generated", identityOf({ user, account }), {
+      ...conversationProperties,
+      refused: false,
+      outcome: "failed",
+      failureType: clip(error instanceof Error ? error.name : "unknown", 50),
+    });
     next(error);
   }
 });
