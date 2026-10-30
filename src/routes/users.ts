@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // A new user passed validation and the duplicate-email check, and was added to the account.
+  const { user: actor, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_added",
+    visitorId: actor.id,
+    accountId: account.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      targetAccountPlan: accountStore.get(user.accountId)?.plan ?? "unknown",
+      accountUserCount: userStore.list(user.accountId).length,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,21 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // The user's role changed: fires only when the saved role differs from the one before.
+  if (previousRole !== undefined && previousRole !== updated.role) {
+    const { user: actor, account } = res.locals as AuthLocals;
+    trackEvent({
+      event: "user_role_changed",
+      visitorId: actor.id,
+      accountId: account.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+      },
+    });
   }
   res.json(updated);
 });
