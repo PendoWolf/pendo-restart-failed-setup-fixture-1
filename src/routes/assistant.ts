@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent, truncate, type TrackPropertyValue } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,38 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
-  try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
+  const { conversationId } = body;
+  const upcomingTrips = tripStore.upcoming();
+  const startedAt = Date.now();
+  // Track Event: the language model answered, refused or errored.
+  const trackReply = (outcome: "answered" | "refused" | "error", extra: Record<string, TrackPropertyValue>) =>
+    trackEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncate(conversationId),
+        messageCount: messages.length,
+        outcome,
+        refused: outcome === "refused",
+        model: ASSISTANT_MODEL,
+        upcomingTripsCount: upcomingTrips.length,
+        latencyMs: Date.now() - startedAt,
+        plan: account.plan,
+        userRole: user.role,
+        ...extra,
+      },
     });
+  try {
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    trackReply(refused ? "refused" : "answered", { replyLength: content.length });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
     res.json(reply);
   } catch (error) {
+    trackReply("error", {});
     next(error);
   }
 });

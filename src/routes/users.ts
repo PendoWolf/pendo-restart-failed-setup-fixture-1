@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,22 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Track Event: a new user passed validation and the duplicate-email check, and was added to an account.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_added",
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      plan: accountStore.get(user.accountId)?.plan,
+      accountUserCount: userStore.list(user.accountId).length,
+      createdByUserId: actor.id,
+      createdByRole: actor.role,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +91,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = userStore.get(req.params.id);
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -82,13 +101,45 @@ usersRouter.put("/:id", (req, res) => {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Track Event: only when the saved role differs from the stored one (admin <-> member).
+  if (previous && previous.role !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent({
+      event: "user_role_changed",
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole: previous.role,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+        changedByUserId: actor.id,
+      },
+    });
+  }
   res.json(updated);
 });
 
 usersRouter.delete("/:id", (req, res) => {
-  if (!userStore.remove(req.params.id)) {
+  // Read the user before they're gone, for their Track Event.
+  const removed = userStore.get(req.params.id);
+  if (!removed || !userStore.remove(req.params.id)) {
     res.status(404).json({ error: "user not found" });
     return;
   }
+  // Track Event: a seat was removed from an account.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent({
+    event: "team_member_removed",
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      removedUserId: removed.id,
+      removedUserRole: removed.role,
+      targetAccountId: removed.accountId,
+      remainingUserCount: userStore.list(removed.accountId).length,
+      removedByUserId: actor.id,
+    },
+  });
   res.status(204).end();
 });
