@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,20 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // Pendo Track Event: a user was added. No email or name is sent (PII).
+  const { user: creator, account: creatorAccount } = res.locals as AuthLocals;
+  trackPendoEvent({
+    event: "user_created",
+    visitorId: creator.id,
+    accountId: creatorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      roleDefaulted: body!.role === undefined,
+      accountId: user.accountId,
+      createdByUserId: creator.id,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +89,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +98,22 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Pendo Track Event: the user's role (their permissions) actually changed.
+  if (previousRole !== undefined && body!.role !== undefined && body!.role !== previousRole) {
+    const { user: changer, account: changerAccount } = res.locals as AuthLocals;
+    trackPendoEvent({
+      event: "user_role_changed",
+      visitorId: changer.id,
+      accountId: changerAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        accountId: updated.accountId,
+        changedByUserId: changer.id,
+      },
+    });
   }
   res.json(updated);
 });

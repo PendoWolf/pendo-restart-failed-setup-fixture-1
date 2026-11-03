@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -21,6 +22,13 @@ authRouter.post("/login", (req, res) => {
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  // Pendo Track Event: a session was actually created (a sign-in click also counts 401 wrong-password attempts).
+  trackPendoEvent({
+    event: "sign_in_completed",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { role: user.role, accountPlan: account.plan },
+  });
   res.json(session);
 });
 

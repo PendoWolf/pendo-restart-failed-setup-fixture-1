@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent, truncateForPendo } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,54 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
+  // Shared properties for the assistant_reply_generated Pendo Track Event.
+  const conversationProperties = {
+    conversationId: truncateForPendo(body.conversationId, 64),
+    messageCount: messages.length,
+    userMessageCount: messages.filter((message) => message.role === "user").length,
+    upcomingTripCount: upcomingTrips.length,
+    model: ASSISTANT_MODEL,
+    accountPlan: account.plan,
+  };
+  const startedAt = Date.now();
   try {
-    const content = await writeAssistantReply(messages, {
+    const { content, stopReason } = await writeAssistantReply(messages, {
       user,
       account,
-      upcomingTrips: tripStore.upcoming(),
+      upcomingTrips,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // Pendo Track Event: the model answered (or refused) the conversation.
+    trackPendoEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        ...conversationProperties,
+        messageId: reply.message.id,
+        outcome: stopReason === "refusal" ? "refusal" : "success",
+        stopReason: stopReason ?? "unknown",
+        replyLength: content.length,
+        latencyMs: Date.now() - startedAt,
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // Pendo Track Event: the model call failed, so no reply was generated.
+    trackPendoEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        ...conversationProperties,
+        outcome: "failure",
+        latencyMs: Date.now() - startedAt,
+      },
+    });
     next(error);
   }
 });
