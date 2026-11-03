@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackPendoEvent, truncateForPendo } from "../analytics/pendo.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -25,10 +26,20 @@ assistantRouter.post("/chat", async (req, res, next) => {
   }
   const { user, account } = res.locals as AuthLocals;
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
+    const upcomingTrips = tripStore.upcoming();
+    const { content, stopReason } = await writeAssistantReply(messages, { user, account, upcomingTrips });
+    // Pendo: the model actually answered (or refused), which the chat's send click can't show.
+    trackPendoEvent("assistant_reply_generated", { user, account }, {
+      conversationId: truncateForPendo(body.conversationId),
+      messageCount: messages.length,
+      userMessageCount: messages.filter((message) => message.role === "user").length,
+      upcomingTripsCount: upcomingTrips.length,
+      model: ASSISTANT_MODEL,
+      refused: stopReason === "refusal",
+      replyLength: content.length,
+      stopReason,
+      accountPlan: account.plan,
+      userRole: user.role,
     });
     const reply: ChatReply = {
       conversationId: body.conversationId,

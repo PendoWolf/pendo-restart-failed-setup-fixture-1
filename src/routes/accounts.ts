@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackPendoEvent } from "../analytics/pendo.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { Account, NewAccount } from "../types.js";
@@ -48,7 +50,11 @@ accountsRouter.post("/", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
-  res.status(201).json(accountStore.create({ name: body!.name!.trim(), plan: body!.plan! }));
+  const created = accountStore.create({ name: body!.name!.trim(), plan: body!.plan! });
+  // Pendo: a valid account was created, with the plan it starts on.
+  const session = res.locals as AuthLocals;
+  trackPendoEvent("account_created", session, { newAccountId: created.id, plan: created.plan });
+  res.status(201).json(created);
 });
 
 accountsRouter.put("/:id", (req, res) => {
@@ -58,13 +64,25 @@ accountsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous = accountStore.get(req.params.id);
   const updated = accountStore.update(req.params.id, {
     ...(body!.name !== undefined && { name: body!.name.trim() }),
     ...(body!.plan !== undefined && { plan: body!.plan }),
   });
-  if (!updated) {
+  if (!updated || !previous) {
     res.status(404).json({ error: "account not found" });
     return;
+  }
+  // Pendo: conversion milestone, only when the saved plan differs from the previous one.
+  if (previous.plan !== updated.plan) {
+    const session = res.locals as AuthLocals;
+    trackPendoEvent("account_plan_changed", session, {
+      targetAccountId: updated.id,
+      previousPlan: previous.plan,
+      newPlan: updated.plan,
+      changeDirection: PLANS.indexOf(updated.plan) > PLANS.indexOf(previous.plan) ? "upgrade" : "downgrade",
+      accountUserCount: userStore.list(updated.id).length,
+    });
   }
   res.json(updated);
 });
