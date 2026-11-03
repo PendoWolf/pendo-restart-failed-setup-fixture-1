@@ -1,6 +1,10 @@
 import { Router } from "express";
+import { daysBetween, today, trackEvent, truncate } from "../analytics/pendo-track.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { tripStore } from "../store/trips.js";
-import type { NewTrip } from "../types.js";
+import type { NewTrip, Trip } from "../types.js";
+
+const TRIP_FIELDS: (keyof NewTrip)[] = ["destination", "startDate", "endDate", "travelers"];
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -43,6 +47,20 @@ tripsRouter.post("/", (req, res) => {
     endDate: body!.endDate!,
     travelers: body!.travelers!,
   });
+  // The trip passed validation and was saved.
+  const { user, account } = res.locals as AuthLocals;
+  trackEvent({
+    event: "trip_created",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: {
+      tripId: trip.id,
+      destination: truncate(trip.destination),
+      travelers: trip.travelers,
+      tripLengthDays: daysBetween(trip.startDate, trip.endDate),
+      daysUntilStart: daysBetween(today(), trip.startDate),
+    },
+  });
   res.status(201).json(trip);
 });
 
@@ -62,6 +80,7 @@ tripsRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previous: Trip | undefined = tripStore.get(req.params.id);
   const trip = tripStore.update(req.params.id, {
     destination: body!.destination!.trim(),
     startDate: body!.startDate!,
@@ -71,6 +90,23 @@ tripsRouter.put("/:id", (req, res) => {
   if (!trip) {
     res.status(404).json({ error: "trip not found" });
     return;
+  }
+  // Only fire when the save actually changed the trip's details.
+  const changedFields = previous ? TRIP_FIELDS.filter((field) => previous[field] !== trip[field]) : [];
+  if (changedFields.length > 0) {
+    const { user, account } = res.locals as AuthLocals;
+    trackEvent({
+      event: "trip_updated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        tripId: trip.id,
+        changedFields,
+        travelers: trip.travelers,
+        tripLengthDays: daysBetween(trip.startDate, trip.endDate),
+        daysUntilStart: daysBetween(today(), trip.startDate),
+      },
+    });
   }
   res.json(trip);
 });

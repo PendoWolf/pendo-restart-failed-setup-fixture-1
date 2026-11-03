@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo-track.js";
+import type { AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { userStore } from "../store/users.js";
 import type { NewUser, UserRole, UserUpdate } from "../types.js";
@@ -63,6 +65,21 @@ usersRouter.post("/", (req, res) => {
     accountId: body!.accountId!,
     password: body!.password!,
   });
+  // The new user passed validation and the duplicate-email check, and was saved.
+  const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+  trackEvent({
+    event: "user_created",
+    visitorId: actor.id,
+    accountId: actorAccount.id,
+    properties: {
+      newUserId: user.id,
+      role: user.role,
+      targetAccountId: user.accountId,
+      accountUserCount: userStore.list(user.accountId).length,
+      createdByUserId: actor.id,
+      createdByRole: actor.role,
+    },
+  });
   res.status(201).json(user);
 });
 
@@ -73,6 +90,7 @@ usersRouter.put("/:id", (req, res) => {
     res.status(400).json({ error: problem });
     return;
   }
+  const previousRole = userStore.get(req.params.id)?.role;
   const updated = userStore.update(req.params.id, {
     ...(body!.email !== undefined && { email: body!.email }),
     ...(body!.name !== undefined && { name: body!.name.trim() }),
@@ -81,6 +99,22 @@ usersRouter.put("/:id", (req, res) => {
   if (!updated) {
     res.status(404).json({ error: "user not found" });
     return;
+  }
+  // Only fire when the save actually changed the user's role (a permission change).
+  if (previousRole !== undefined && previousRole !== updated.role) {
+    const { user: actor, account: actorAccount } = res.locals as AuthLocals;
+    trackEvent({
+      event: "user_role_changed",
+      visitorId: actor.id,
+      accountId: actorAccount.id,
+      properties: {
+        targetUserId: updated.id,
+        previousRole,
+        newRole: updated.role,
+        targetAccountId: updated.accountId,
+        changedByUserId: actor.id,
+      },
+    });
   }
   res.json(updated);
 });

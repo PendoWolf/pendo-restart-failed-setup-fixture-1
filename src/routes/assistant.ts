@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { trackEvent, truncate } from "../analytics/pendo-track.js";
 import type { AuthLocals } from "../auth/require-auth.js";
-import { writeAssistantReply } from "../assistant/reply.js";
+import { ASSISTANT_MODEL, writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
 import type { ChatReply, ChatRequest } from "../types.js";
 
@@ -24,18 +25,45 @@ assistantRouter.post("/chat", async (req, res, next) => {
     return;
   }
   const { user, account } = res.locals as AuthLocals;
+  const upcomingTrips = tripStore.upcoming();
   try {
-    const content = await writeAssistantReply(messages, {
-      user,
-      account,
-      upcomingTrips: tripStore.upcoming(),
-    });
+    const { content, refused } = await writeAssistantReply(messages, { user, account, upcomingTrips });
     const reply: ChatReply = {
       conversationId: body.conversationId,
       message: { id: randomUUID(), role: "assistant", content },
     };
+    // The model finished its reply (or refused): only known once the Anthropic call returns.
+    trackEvent({
+      event: "assistant_reply_generated",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncate(body.conversationId),
+        messageCount: messages.length,
+        userMessageCount: messages.filter((message) => message.role === "user").length,
+        upcomingTripsCount: upcomingTrips.length,
+        refused,
+        replyLength: content.length,
+        model: ASSISTANT_MODEL,
+        plan: account.plan,
+        userRole: user.role,
+      },
+    });
     res.json(reply);
   } catch (error) {
+    // The Anthropic call threw, so the user gets a 500 instead of a reply.
+    trackEvent({
+      event: "assistant_reply_failed",
+      visitorId: user.id,
+      accountId: account.id,
+      properties: {
+        conversationId: truncate(body.conversationId),
+        messageCount: messages.length,
+        model: ASSISTANT_MODEL,
+        errorType: error instanceof Error ? error.constructor.name : typeof error,
+        plan: account.plan,
+      },
+    });
     next(error);
   }
 });

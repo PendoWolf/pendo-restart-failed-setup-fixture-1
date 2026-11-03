@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { trackEvent } from "../analytics/pendo-track.js";
 import { requireAuth, type AuthLocals } from "../auth/require-auth.js";
 import { accountStore } from "../store/accounts.js";
 import { sessionStore } from "../store/sessions.js";
@@ -11,16 +12,37 @@ export const authRouter = Router();
 authRouter.post("/login", (req, res) => {
   const body = req.body as Partial<SignInRequest> | undefined;
   if (!body || typeof body.email !== "string" || typeof body.password !== "string") {
+    // The sign-in was rejected before anyone could be identified, so there's no visitor or account yet.
+    trackEvent({
+      event: "sign_in_failed",
+      visitorId: "system",
+      accountId: "system",
+      properties: { failureReason: "missing_fields", statusCode: 400 },
+    });
     res.status(400).json({ error: "email and password are required" });
     return;
   }
   const user = userStore.verifyPassword(body.email, body.password);
   const account = user ? accountStore.get(user.accountId) : undefined;
   if (!user || !account) {
+    // Never send the email or password that was tried.
+    trackEvent({
+      event: "sign_in_failed",
+      visitorId: "system",
+      accountId: "system",
+      properties: { failureReason: "wrong_credentials", statusCode: 401 },
+    });
     res.status(401).json({ error: "wrong email or password" });
     return;
   }
   const session: SessionResponse = { token: sessionStore.start(user.id), user, account };
+  // The password checked out and a session started.
+  trackEvent({
+    event: "sign_in_completed",
+    visitorId: user.id,
+    accountId: account.id,
+    properties: { userRole: user.role, plan: account.plan },
+  });
   res.json(session);
 });
 
