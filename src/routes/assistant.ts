@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
+import { closeTurn } from "pendo-server-sdk";
 import type { AuthLocals } from "../auth/require-auth.js";
 import { writeAssistantReply } from "../assistant/reply.js";
 import { tripStore } from "../store/trips.js";
@@ -37,5 +38,8 @@ assistantRouter.post("/chat", async (req, res, next) => {
     res.json(reply);
   } catch (error) {
     next(error);
+  } finally {
+    // Sends this turn's prompt and reply to Pendo Agent Analytics now, rather than holding them until the next turn.
+    closeTurn(body.conversationId);
   }
 });
